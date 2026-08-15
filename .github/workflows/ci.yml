@@ -1,0 +1,27 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# The functional suites (tests/e2e.py, tests/system.py) are not run here.
+# They need the `openvsp` module, which is not on PyPI — it ships with the
+# OpenVSP binary release. Running them means installing that release first, so
+# they stay a local gate. What CI can check, it checks.
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - uses: astral-sh/setup-uv@v5
+      - name: Lint
+        run: uvx ruff check .
+      - name: Check formatting is not wildly off
+        run: uvx ruff format --diff .
+      - name: Byte-compile every module
+        run: python -m compileall -q vsp_mcp.py tests

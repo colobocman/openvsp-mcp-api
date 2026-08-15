@@ -25,6 +25,30 @@ Register the server:
 claude mcp add openvsp --scope user -- /path/to/.venv/bin/python /path/to/vsp-mcp/vsp_mcp.py
 ```
 
+## Transports
+
+Stdio is the default and needs no flags — each client gets its own OpenVSP
+process and its own model.
+
+Building geometry and running VSPAERO costs seconds, so it is often better to
+keep one OpenVSP process warm and let several clients talk to it over HTTP:
+
+```bash
+python vsp_mcp.py --transport streamable-http --port 8000
+```
+
+`--transport sse` is also available, along with `--host`, `--port`, `--path`,
+and `--describe` to print the tool list without starting the server.
+
+Two things to keep in mind before exposing it:
+
+- **All HTTP clients share one model.** That is the point — but it also means
+  one client calling `vsp_new_model` discards what another was working on.
+  Coordinate, or give each client its own stdio server.
+- **There is no authentication, and `vsp_run_api_script` executes arbitrary
+  Python.** The default bind is loopback for that reason. Only bind wider on a
+  network you trust.
+
 Verify:
 
 ```bash

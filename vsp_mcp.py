@@ -11,11 +11,13 @@ serialised behind a lock because the OpenVSP API is not thread-safe.
 
 from __future__ import annotations
 
-import io
+import argparse
 import contextlib
+import io
+import json
 import os
 import threading
-from typing import Any
+from typing import Any, TypedDict
 from xml.etree import ElementTree
 
 import openvsp as vsp
@@ -29,6 +31,118 @@ _ERR.SilenceErrors()
 
 # Arrays in analysis results can be enormous (per-node pressures etc.).
 _MAX_ITEMS = 200
+
+
+# --------------------------------------------------------------------------
+# response shapes
+#
+# Declared so clients get an output schema instead of an opaque object. Only
+# the stable shapes are typed: analysis results carry whatever fields the
+# analysis emits (30 for CompGeom, 3 for DegenGeom), so those stay open.
+# --------------------------------------------------------------------------
+
+class VspInfo(TypedDict):
+    version: str
+    vsp_file: str
+    vspaero_path: str
+    geom_count: int
+    geom_ids: list[str]
+    available_geom_types: list[str]
+
+
+class GeomInfo(TypedDict):
+    id: str
+    name: str
+    type: str
+    parent: str
+    children: list[str]
+
+
+class NewModelResult(TypedDict):
+    ok: bool
+    geom_count: int
+
+
+class OpenResult(TypedDict):
+    ok: bool
+    path: str
+    geoms: list[GeomInfo]
+
+
+class SaveResult(TypedDict):
+    ok: bool
+    path: str
+
+
+class AddGeomResult(TypedDict):
+    id: str
+    name: str
+    type: str
+    parm_count: int
+
+
+class DeleteResult(TypedDict):
+    ok: bool
+    remaining: int
+
+
+class ParmDetail(TypedDict):
+    name: str
+    group: str
+    value: float
+    type: str
+    min: float
+    max: float
+    description: str
+
+
+class SetInfo(TypedDict):
+    index: int
+    name: str
+    geoms: list[str]
+
+
+class AssignSetResult(TypedDict):
+    set: str
+    index: int
+    geoms: list[str]
+
+
+class AnalysisInput(TypedDict):
+    name: str
+    type: str
+    default: Any
+    doc: str
+
+
+class AnalysisDescription(TypedDict):
+    analysis: str
+    doc: str
+    inputs: list[AnalysisInput]
+
+
+class AnalysisResult(TypedDict):
+    analysis: str
+    results_id: str
+    results: dict[str, Any]
+
+
+class SweepResult(TypedDict):
+    results_id: str
+    reference: str
+    surface_split: dict[str, list[str]] | None
+    polar: dict[str, Any]
+
+
+class ExportResult(TypedDict):
+    ok: bool
+    path: str
+    format: str
+
+
+class ApiScriptResult(TypedDict):
+    stdout: str
+    result: Any
 
 
 # --------------------------------------------------------------------------
@@ -90,7 +204,7 @@ def _truncate(seq: list) -> Any:
 # --------------------------------------------------------------------------
 
 @server.tool()
-def vsp_info() -> dict:
+def vsp_info() -> VspInfo:
     """Report OpenVSP version, VSPAERO path, and a summary of the in-memory model."""
     with _vsp_call():
         geoms = list(vsp.FindGeoms())
@@ -105,7 +219,7 @@ def vsp_info() -> dict:
 
 
 @server.tool()
-def vsp_new_model() -> dict:
+def vsp_new_model() -> NewModelResult:
     """Discard the in-memory model and start a fresh, empty one."""
     with _vsp_call():
         vsp.VSPRenew()
@@ -114,7 +228,7 @@ def vsp_new_model() -> dict:
 
 
 @server.tool()
-def vsp_open_model(path: str) -> dict:
+def vsp_open_model(path: str) -> OpenResult:
     """Load a .vsp3 file, replacing the in-memory model.
 
     The file is validated first. ReadVSPFile has no way to fail cleanly — it
@@ -141,7 +255,7 @@ def vsp_open_model(path: str) -> dict:
 
 
 @server.tool()
-def vsp_save_model(path: str, set_index: int = 0) -> dict:
+def vsp_save_model(path: str, set_index: int = 0) -> SaveResult:
     """Write the in-memory model to a .vsp3 file.
 
     Args:
@@ -159,7 +273,7 @@ def vsp_save_model(path: str, set_index: int = 0) -> dict:
 # geometry
 # --------------------------------------------------------------------------
 
-def _list_geoms() -> list[dict]:
+def _list_geoms() -> list[GeomInfo]:
     out = []
     for gid in vsp.FindGeoms():
         out.append(
@@ -175,14 +289,14 @@ def _list_geoms() -> list[dict]:
 
 
 @server.tool()
-def vsp_list_geoms() -> list[dict]:
+def vsp_list_geoms() -> list[GeomInfo]:
     """List every component in the model with its id, name, type, and hierarchy."""
     with _vsp_call():
         return _list_geoms()
 
 
 @server.tool()
-def vsp_add_geom(geom_type: str, name: str = "", parent_id: str = "") -> dict:
+def vsp_add_geom(geom_type: str, name: str = "", parent_id: str = "") -> AddGeomResult:
     """Add a component to the model.
 
     Args:
@@ -207,7 +321,7 @@ def vsp_add_geom(geom_type: str, name: str = "", parent_id: str = "") -> dict:
 
 
 @server.tool()
-def vsp_delete_geom(geom_id: str) -> dict:
+def vsp_delete_geom(geom_id: str) -> DeleteResult:
     """Delete a component from the model."""
     with _vsp_call():
         vsp.DeleteGeom(geom_id)
@@ -230,7 +344,7 @@ _PARM_TYPES = {
 }
 
 
-def _parm_detail(pid: str) -> dict:
+def _parm_detail(pid: str) -> ParmDetail:
     return {
         "name": vsp.GetParmName(pid),
         "group": vsp.GetParmDisplayGroupName(pid),
@@ -284,7 +398,7 @@ def vsp_list_parms(geom_id: str, group: str = "", name_contains: str = "") -> di
 
 
 @server.tool()
-def vsp_get_parms(geom_id: str, parms: list[dict]) -> list[dict]:
+def vsp_get_parms(geom_id: str, parms: list[dict]) -> list[ParmDetail]:
     """Read specific parameters.
 
     Args:
@@ -300,7 +414,7 @@ def vsp_get_parms(geom_id: str, parms: list[dict]) -> list[dict]:
 
 
 @server.tool()
-def vsp_set_parms(geom_id: str, parms: list[dict]) -> list[dict]:
+def vsp_set_parms(geom_id: str, parms: list[dict]) -> list[ParmDetail]:
     """Set parameters and update the model.
 
     OpenVSP clamps values to each parameter's limits, so the returned values are
@@ -331,7 +445,7 @@ _NON_SURFACE_TYPES = {"Blank", "Hinge", "Routing"}
 
 
 @server.tool()
-def vsp_list_sets() -> list[dict]:
+def vsp_list_sets() -> list[SetInfo]:
     """List the geometry sets and which components belong to each.
 
     Sets are how OpenVSP scopes an analysis to part of the model. Indices 0-2
@@ -351,7 +465,7 @@ def vsp_list_sets() -> list[dict]:
 
 
 @server.tool()
-def vsp_assign_set(geom_id: str, set_index: int, member: bool = True, set_name: str = "") -> dict:
+def vsp_assign_set(geom_id: str, set_index: int, member: bool = True, set_name: str = "") -> AssignSetResult:
     """Add or remove a component from a geometry set.
 
     Args:
@@ -412,7 +526,7 @@ def vsp_list_analyses() -> list[str]:
 
 
 @server.tool()
-def vsp_describe_analysis(name: str) -> dict:
+def vsp_describe_analysis(name: str) -> AnalysisDescription:
     """Show an analysis's inputs with their types and current default values.
 
     Args:
@@ -499,7 +613,7 @@ def _read_results(rid: str) -> dict:
 
 
 @server.tool()
-def vsp_run_analysis(name: str, inputs: dict | None = None, keep_mesh: bool = False) -> dict:
+def vsp_run_analysis(name: str, inputs: dict | None = None, keep_mesh: bool = False) -> AnalysisResult:
     """Run any OpenVSP analysis and return its results.
 
     Call vsp_describe_analysis first to see the available inputs. Inputs left
@@ -530,7 +644,7 @@ def vsp_run_analysis(name: str, inputs: dict | None = None, keep_mesh: bool = Fa
 
 
 @server.tool()
-def vsp_mass_properties(set_index: int = 0, num_slices: int = 100) -> dict:
+def vsp_mass_properties(set_index: int = 0, num_slices: int = 100) -> AnalysisResult:
     """Compute mass, centre of gravity, and inertia tensor of the model.
 
     Args:
@@ -541,7 +655,7 @@ def vsp_mass_properties(set_index: int = 0, num_slices: int = 100) -> dict:
 
 
 @server.tool()
-def vsp_comp_geom(set_index: int = 0, half_mesh: bool = False) -> dict:
+def vsp_comp_geom(set_index: int = 0, half_mesh: bool = False) -> AnalysisResult:
     """Compute wetted area and volume per component via a triangulated mesh.
 
     Args:
@@ -567,7 +681,7 @@ def vsp_vspaero_sweep(
     ref_span: float = 0.0,
     ref_chord: float = 0.0,
     n_cpu: int = 4,
-) -> dict:
+) -> SweepResult:
     """Run a VSPAERO angle-of-attack sweep and return the aerodynamic polar.
 
     Runs VSPAEROComputeGeometry, then the sweep, then reads the polar.
@@ -699,7 +813,7 @@ def vsp_export(
     set_index: int = 0,
     geom_id: str = "",
     keep_mesh: bool = False,
-) -> dict:
+) -> ExportResult:
     """Export the model to a CAD or mesh file.
 
     A default extension is appended when the path has none. This matters:
@@ -739,7 +853,7 @@ def vsp_export(
 # --------------------------------------------------------------------------
 
 @server.tool()
-def vsp_run_api_script(code: str) -> dict:
+def vsp_run_api_script(code: str) -> ApiScriptResult:
     """Run Python against the live OpenVSP model for anything the other tools miss.
 
     The OpenVSP API has ~1700 functions; this reaches the ones without a
@@ -754,7 +868,7 @@ def vsp_run_api_script(code: str) -> dict:
         ns: dict[str, Any] = {"vsp": vsp, "openvsp": vsp}
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
-            exec(code, ns)
+            exec(code, ns)  # noqa: S102 - this tool exists to run caller-supplied API code
         value = ns.get("result")
         return {
             "stdout": buf.getvalue(),
@@ -762,8 +876,53 @@ def vsp_run_api_script(code: str) -> dict:
         }
 
 
-def main() -> None:
-    server.run(transport="stdio")
+def main(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(
+        prog="openvsp-mcp-api",
+        description="Serve the OpenVSP Python API over the Model Context Protocol.",
+    )
+    parser.add_argument(
+        "--transport",
+        choices=["stdio", "streamable-http", "sse"],
+        default="stdio",
+        help="stdio (default) runs one server per client. The HTTP transports let "
+        "several clients share one OpenVSP process — and therefore one model.",
+    )
+    parser.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="interface to bind for the HTTP transports (default loopback). The "
+        "server is unauthenticated and vsp_run_api_script executes arbitrary "
+        "Python, so bind beyond loopback only on a trusted network.",
+    )
+    parser.add_argument("--port", type=int, default=8000, help="port for the HTTP transports")
+    parser.add_argument("--path", default="/mcp", help="mount path for the HTTP transports")
+    parser.add_argument(
+        "--describe",
+        action="store_true",
+        help="print the server's tools and exit, without starting it",
+    )
+    args = parser.parse_args(argv)
+
+    if args.describe:
+        print(json.dumps({
+            "name": "openvsp-mcp-api",
+            "openvsp_version": vsp.GetVSPVersion(),
+            "default_transport": "stdio",
+            "tools": sorted(
+                name for name, fn in globals().items()
+                if name.startswith("vsp_") and callable(fn)
+            ),
+        }, indent=2))
+        return
+
+    if args.transport == "stdio":
+        server.run()
+    elif args.transport == "streamable-http":
+        server.run("streamable-http", host=args.host, port=args.port,
+                   streamable_http_path=args.path)
+    else:
+        server.run("sse", host=args.host, port=args.port, sse_path=args.path)
 
 
 if __name__ == "__main__":

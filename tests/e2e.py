@@ -65,7 +65,11 @@ class Client:
         if res.get("isError"):
             raise RuntimeError(f"{name} -> {res['content'][0]['text']}")
         sc = res.get("structuredContent")
-        return sc.get("result", sc) if sc is not None else json.loads(res["content"][0]["text"])
+        if sc is None:
+            return json.loads(res["content"][0]["text"])
+        # Non-object returns arrive wrapped as exactly {"result": ...}; object
+        # returns are the object itself, and one of them has a "result" field.
+        return sc["result"] if set(sc) == {"result"} else sc
 
     def close(self):
         self.proc.stdin.close()
@@ -87,7 +91,7 @@ def main() -> None:
         check("server reports version", c.tool("vsp_info")["version"].startswith("OpenVSP"))
         c.tool("vsp_new_model")
         wing = c.tool("vsp_add_geom", {"geom_type": "WING", "name": "MainWing"})
-        body = c.tool("vsp_add_geom", {"geom_type": "FUSELAGE", "name": "Body"})
+        c.tool("vsp_add_geom", {"geom_type": "FUSELAGE", "name": "Body"})
         geoms = c.tool("vsp_list_geoms")
         check("two components created", len(geoms) == 2,
               str([g["name"] for g in geoms]))

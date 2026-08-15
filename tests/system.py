@@ -19,6 +19,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 from pathlib import Path
 
 SERVER = str(Path(__file__).resolve().parent.parent / "vsp_mcp.py")
@@ -83,7 +84,11 @@ class Client:
         if res.get("isError"):
             raise RuntimeError(res["content"][0]["text"])
         sc = res.get("structuredContent")
-        return sc.get("result", sc) if sc is not None else json.loads(res["content"][0]["text"])
+        if sc is None:
+            return json.loads(res["content"][0]["text"])
+        # Non-object returns arrive wrapped as exactly {"result": ...}; object
+        # returns are the object itself, and one of them has a "result" field.
+        return sc["result"] if set(sc) == {"result"} else sc
 
     def pipeline(self, requests):
         """Fire many requests without waiting, then collect every reply."""
@@ -125,6 +130,57 @@ RUNNABLE = ["MassProp", "CompGeom", "DegenGeom", "Projection", "PlanarSlice",
             "WaveDrag", "SurfacePatches", "GeometryAnalysis"]
 
 
+def http_check(port: int = 8813) -> None:
+    """Same server over HTTP: several clients can share one OpenVSP process."""
+    import socket
+
+    import anyio
+    from mcp import ClientSession
+    from mcp.client.streamable_http import streamable_http_client
+
+    proc = subprocess.Popen(
+        [PY, SERVER, "--transport", "streamable-http", "--port", str(port)],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        for _ in range(40):
+            time.sleep(0.5)
+            if proc.poll() is not None:
+                ok("http server starts", False, "exited early")
+                return
+            try:
+                with socket.create_connection(("127.0.0.1", port), timeout=0.5):
+                    break
+            except OSError:
+                continue
+
+        async def go():
+            async with (
+                streamable_http_client(f"http://127.0.0.1:{port}/mcp") as (r, w),
+                ClientSession(r, w) as s,
+            ):
+                    await s.initialize()
+                    tools = (await s.list_tools()).tools
+                    ok("http exposes the same 20 tools", len(tools) == 20, str(len(tools)))
+                    await s.call_tool("vsp_new_model", {})
+                    await s.call_tool("vsp_add_geom",
+                                      {"geom_type": "WING", "name": "HttpWing"})
+                    res = await s.call_tool("vsp_list_geoms", {})
+                    names = [g["name"] for g in res.structured_content["result"]]
+                    ok("model persists across separate http calls",
+                       names == ["HttpWing"], str(names))
+                    res = await s.call_tool("vsp_mass_properties", {})
+                    mass = res.structured_content["results"]["Total_Mass"]
+                    ok("analysis runs over http", mass > 0, f"mass={mass:.4f}")
+
+        anyio.run(go)
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+
+
 def main():
     tmp = tempfile.mkdtemp(prefix="vsp_sys_")
     out = lambda n: str(Path(tmp) / n)
@@ -137,6 +193,14 @@ def main():
        all(t.get("description") for t in tools))
     ok("every tool has an input schema",
        all(t.get("inputSchema", {}).get("type") == "object" for t in tools))
+    # Stable-shape tools declare their return type, so clients know what comes
+    # back without calling first. Only vsp_list_parms stays open: it has two
+    # shapes depending on whether a group was named.
+    schemas = [t["name"] for t in tools if t.get("outputSchema")]
+    ok("all but one tool advertise an output schema",
+       len(schemas) == len(tools) - 1,
+       f"{len(schemas)}/{len(tools)}, open: "
+       f"{sorted({t['name'] for t in tools} - set(schemas))}")
     covered = set()
 
     print("\n[2] all 15 geometry types")
@@ -210,7 +274,7 @@ def main():
     except RuntimeError:
         ok("BEM refuses a model with no propeller", True)
     c.tool("vsp_new_model")
-    prop = c.tool("vsp_add_geom", {"geom_type": "PROP", "name": "P"})
+    c.tool("vsp_add_geom", {"geom_type": "PROP", "name": "P"})
     c.tool("vsp_save_model", {"path": out("p.vsp3")})
     bem = c.tool("vsp_export", {"path": out("p"), "export_format": "BEM"})
     ok("BEM exports a propeller", Path(bem["path"]).stat().st_size > 0,
@@ -344,6 +408,9 @@ def main():
     ok("fresh server starts with an empty model",
        c2.tool("vsp_list_geoms") == [])
     c2.close()
+
+    print("\n[12] streamable-http transport")
+    http_check()
 
     print(f"\n{'='*60}\npassed {len(PASS)}   failed {len(FAIL)}   notes {len(NOTE)}")
     if FAIL:
