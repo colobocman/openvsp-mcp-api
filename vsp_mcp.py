@@ -41,6 +41,7 @@ _MAX_ITEMS = 200
 # analysis emits (30 for CompGeom, 3 for DegenGeom), so those stay open.
 # --------------------------------------------------------------------------
 
+
 class VspInfo(TypedDict):
     version: str
     vsp_file: str
@@ -149,6 +150,7 @@ class ApiScriptResult(TypedDict):
 # error plumbing
 # --------------------------------------------------------------------------
 
+
 def _drain_errors() -> list[str]:
     out = []
     while _ERR.GetNumTotalErrors() > 0:
@@ -183,9 +185,7 @@ def _mesh_cleanup(keep: bool = False):
             # Type names, not user names: "Mesh" from CompGeom/export,
             # "NGonMesh" from VSPAEROComputeGeometry.
             stray = [
-                g
-                for g in vsp.FindGeoms()
-                if g not in before and "Mesh" in vsp.GetGeomTypeName(g)
+                g for g in vsp.FindGeoms() if g not in before and "Mesh" in vsp.GetGeomTypeName(g)
             ]
             for g in stray:
                 vsp.DeleteGeom(g)
@@ -202,6 +202,7 @@ def _truncate(seq: list) -> Any:
 # --------------------------------------------------------------------------
 # model lifecycle
 # --------------------------------------------------------------------------
+
 
 @server.tool()
 def vsp_info() -> VspInfo:
@@ -272,6 +273,7 @@ def vsp_save_model(path: str, set_index: int = 0) -> SaveResult:
 # --------------------------------------------------------------------------
 # geometry
 # --------------------------------------------------------------------------
+
 
 def _list_geoms() -> list[GeomInfo]:
     out = []
@@ -456,16 +458,16 @@ def vsp_list_sets() -> list[SetInfo]:
             {
                 "index": i,
                 "name": vsp.GetSetName(i),
-                "geoms": [
-                    vsp.GetGeomName(g) for g in vsp.FindGeoms() if vsp.GetSetFlag(g, i)
-                ],
+                "geoms": [vsp.GetGeomName(g) for g in vsp.FindGeoms() if vsp.GetSetFlag(g, i)],
             }
             for i in range(vsp.GetNumSets())
         ]
 
 
 @server.tool()
-def vsp_assign_set(geom_id: str, set_index: int, member: bool = True, set_name: str = "") -> AssignSetResult:
+def vsp_assign_set(
+    geom_id: str, set_index: int, member: bool = True, set_name: str = ""
+) -> AssignSetResult:
     """Add or remove a component from a geometry set.
 
     Args:
@@ -517,6 +519,7 @@ def _auto_aero_sets() -> tuple[int, int, dict]:
 # --------------------------------------------------------------------------
 # analyses
 # --------------------------------------------------------------------------
+
 
 @server.tool()
 def vsp_list_analyses() -> list[str]:
@@ -579,6 +582,7 @@ def _check_analysis_preconditions(name: str, inputs: dict) -> None:
     the in-memory model. Cheaper to check first.
     """
     if name == "EmintonLord":
+
         def resolved(key):
             if key in inputs:
                 v = inputs[key]
@@ -613,7 +617,9 @@ def _read_results(rid: str) -> dict:
 
 
 @server.tool()
-def vsp_run_analysis(name: str, inputs: dict | None = None, keep_mesh: bool = False) -> AnalysisResult:
+def vsp_run_analysis(
+    name: str, inputs: dict | None = None, keep_mesh: bool = False
+) -> AnalysisResult:
     """Run any OpenVSP analysis and return its results.
 
     Call vsp_describe_analysis first to see the available inputs. Inputs left
@@ -830,7 +836,9 @@ def vsp_export(
     """
     fmt = export_format.upper()
     if fmt not in _EXPORT_FORMATS:
-        raise ValueError(f"unknown format {export_format}; expected one of {sorted(_EXPORT_FORMATS)}")
+        raise ValueError(
+            f"unknown format {export_format}; expected one of {sorted(_EXPORT_FORMATS)}"
+        )
     code, default_ext = _EXPORT_FORMATS[fmt]
 
     written = path if os.path.splitext(path)[1] else path + default_ext
@@ -852,6 +860,7 @@ def vsp_export(
 # escape hatch
 # --------------------------------------------------------------------------
 
+
 @server.tool()
 def vsp_run_api_script(code: str) -> ApiScriptResult:
     """Run Python against the live OpenVSP model for anything the other tools miss.
@@ -872,7 +881,9 @@ def vsp_run_api_script(code: str) -> ApiScriptResult:
         value = ns.get("result")
         return {
             "stdout": buf.getvalue(),
-            "result": value if isinstance(value, (str, int, float, bool, list, dict, type(None))) else repr(value),
+            "result": value
+            if isinstance(value, (str, int, float, bool, list, dict, type(None)))
+            else repr(value),
         }
 
 
@@ -905,22 +916,29 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
 
     if args.describe:
-        print(json.dumps({
-            "name": "openvsp-mcp-api",
-            "openvsp_version": vsp.GetVSPVersion(),
-            "default_transport": "stdio",
-            "tools": sorted(
-                name for name, fn in globals().items()
-                if name.startswith("vsp_") and callable(fn)
-            ),
-        }, indent=2))
+        print(
+            json.dumps(
+                {
+                    "name": "openvsp-mcp-api",
+                    "openvsp_version": vsp.GetVSPVersion(),
+                    "default_transport": "stdio",
+                    "tools": sorted(
+                        name
+                        for name, fn in globals().items()
+                        if name.startswith("vsp_") and callable(fn)
+                    ),
+                },
+                indent=2,
+            )
+        )
         return
 
     if args.transport == "stdio":
         server.run()
     elif args.transport == "streamable-http":
-        server.run("streamable-http", host=args.host, port=args.port,
-                   streamable_http_path=args.path)
+        server.run(
+            "streamable-http", host=args.host, port=args.port, streamable_http_path=args.path
+        )
     else:
         server.run("sse", host=args.host, port=args.port, sse_path=args.path)
 
