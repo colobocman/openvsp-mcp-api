@@ -1,0 +1,22 @@
+[project]
+name = "openvsp-mcp-api"
+version = "0.1.0"
+description = "MCP server exposing the official OpenVSP Python API"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.11"
+dependencies = ["mcp>=2.0"]
+
+# The `openvsp` package is not on PyPI. It ships with the OpenVSP binary
+# release and must be installed from there:
+#   pip install -r /Applications/OpenVSP/python/requirements.txt
+
+[project.scripts]
+openvsp-mcp-api = "vsp_mcp:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+py-modules = ["vsp_mcp"]
