@@ -28,7 +28,8 @@ claude mcp add openvsp --scope user -- /path/to/.venv/bin/python /path/to/vsp-mc
 Verify:
 
 ```bash
-python tests/e2e.py
+python tests/e2e.py      # common path, about a minute
+python tests/system.py   # every tool, geom type, export format and analysis
 ```
 
 ## Tools
@@ -85,6 +86,30 @@ reports a wing section's parameters under `XSec`, but `GetParm` only resolves
 them under `XSec_0` / `XSec_1`. Listing by the former produced duplicate names
 that could not be written back. The server reports
 `GetParmDisplayGroupName`, so any listing feeds straight into a write.
+
+**Two calls abort the process outright.** A C++ abort cannot be caught, so it
+kills the server and the model in memory with it. Both known triggers are now
+refused before they reach OpenVSP:
+
+- The IGES writer aborts when the export path has no file extension. A default
+  extension is appended for every format.
+- `EmintonLord` aborts unless `X_vec` and `Area_vec` are non-empty arrays of
+  equal length.
+
+**A failed open used to destroy the model.** `ReadVSPFile` clears the model
+before parsing and has no way to fail cleanly, so opening a missing or corrupt
+path left you with nothing. The file is checked for existence and a
+`Vsp_Geometry` root before anything is cleared.
+
+**Some analyses stop working after a slicing analysis.** Once MassProp,
+CompGeom or PlanarSlice has run, `WaveDrag` returns an empty results id for the
+rest of the session. That surfaced as `GetAllDataNames::Invalid ID`; it is now
+an explanatory error telling you to run it earlier or reset with
+`vsp_new_model`.
+
+**BEM export needs a propeller.** `ExportFile` writes nothing at all unless
+`SetBEMPropID` was called first. `vsp_export` picks the first Propeller in the
+model, or takes one via `geom_id`.
 
 ## Other things worth knowing
 

@@ -13,8 +13,10 @@ from __future__ import annotations
 
 import io
 import contextlib
+import os
 import threading
 from typing import Any
+from xml.etree import ElementTree
 
 import openvsp as vsp
 from mcp.server.mcpserver import MCPServer
@@ -115,9 +117,22 @@ def vsp_new_model() -> dict:
 def vsp_open_model(path: str) -> dict:
     """Load a .vsp3 file, replacing the in-memory model.
 
+    The file is validated first. ReadVSPFile has no way to fail cleanly — it
+    clears the model before parsing — so an unreadable path would otherwise
+    destroy the model already in memory.
+
     Args:
         path: absolute path to a .vsp3 file.
     """
+    if not os.path.isfile(path):
+        raise ValueError(f"no such file: {path}")
+    try:
+        root = ElementTree.parse(path).getroot().tag
+    except ElementTree.ParseError as exc:
+        raise ValueError(f"not a readable .vsp3 file: {path} ({exc})") from exc
+    if root != "Vsp_Geometry":
+        raise ValueError(f"not an OpenVSP model: {path} has root <{root}>")
+
     with _vsp_call():
         vsp.ClearVSPModel()
         vsp.ReadVSPFile(path)
@@ -175,7 +190,8 @@ def vsp_add_geom(geom_type: str, name: str = "", parent_id: str = "") -> dict:
             BODYOFREVOLUTION, HUMAN, PROP, GEAR, HINGE, CONFORMAL, ROUTING,
             AUXILIARY, COBRA.
         name: optional display name for the new component.
-        parent_id: optional geom id to attach the new component to.
+        parent_id: geom id to attach the new component to. CONFORMAL requires
+            one — it takes its shape from the parent.
     """
     with _vsp_call():
         gid = vsp.AddGeom(geom_type, parent_id) if parent_id else vsp.AddGeom(geom_type)
@@ -442,6 +458,28 @@ def _set_analysis_inputs(name: str, inputs: dict) -> None:
             raise ValueError(f"unsupported input type for {name}.{key}")
 
 
+def _check_analysis_preconditions(name: str, inputs: dict) -> None:
+    """Refuse calls that OpenVSP answers by aborting the process.
+
+    A C++ abort cannot be caught, so it takes the whole server down along with
+    the in-memory model. Cheaper to check first.
+    """
+    if name == "EmintonLord":
+        def resolved(key):
+            if key in inputs:
+                v = inputs[key]
+                return v if isinstance(v, list) else [v]
+            return list(vsp.GetDoubleAnalysisInput(name, key))
+
+        x, area = resolved("X_vec"), resolved("Area_vec")
+        if not x or not area or len(x) != len(area):
+            raise ValueError(
+                "EmintonLord needs X_vec and Area_vec as non-empty arrays of equal "
+                f"length (got {len(x)} and {len(area)}); OpenVSP aborts the process "
+                "otherwise. Use the WaveDrag analysis to derive them from geometry."
+            )
+
+
 def _read_results(rid: str) -> dict:
     data: dict[str, Any] = {}
     for key in vsp.GetAllDataNames(rid):
@@ -474,10 +512,20 @@ def vsp_run_analysis(name: str, inputs: dict | None = None, keep_mesh: bool = Fa
             left in the model these accumulate and skew later results.
     """
     with _vsp_call(), _mesh_cleanup(keep_mesh):
+        if name not in vsp.ListAnalysis():
+            raise ValueError(f"unknown analysis {name}; see vsp_list_analyses")
         vsp.SetAnalysisInputDefaults(name)
+        _check_analysis_preconditions(name, inputs or {})
         if inputs:
             _set_analysis_inputs(name, inputs)
         rid = vsp.ExecAnalysis(name)
+        if not rid:
+            raise RuntimeError(
+                f"{name} produced no results. Some analyses stop working once a "
+                "slicing analysis (MassProp, CompGeom, PlanarSlice) has run in the "
+                "same session — WaveDrag is one. Call vsp_new_model and rebuild, or "
+                "run this analysis before the slicing ones."
+            )
         return {"analysis": name, "results_id": rid, "results": _read_results(rid)}
 
 
@@ -623,44 +671,67 @@ def vsp_vspaero_sweep(
 # export
 # --------------------------------------------------------------------------
 
+# Format -> (OpenVSP enum, default extension). The extension is not cosmetic:
+# the IGES writer aborts the process outright when the path has none.
 _EXPORT_FORMATS = {
-    "STL": vsp.EXPORT_STL,
-    "STEP": vsp.EXPORT_STEP,
-    "IGES": vsp.EXPORT_IGES,
-    "OBJ": vsp.EXPORT_OBJ,
-    "X3D": vsp.EXPORT_X3D,
-    "DXF": vsp.EXPORT_DXF,
-    "SVG": vsp.EXPORT_SVG,
-    "GMSH": vsp.EXPORT_GMSH,
-    "VSPGEOM": vsp.EXPORT_VSPGEOM,
-    "CART3D": vsp.EXPORT_CART3D,
-    "NASCART": vsp.EXPORT_NASCART,
-    "POVRAY": vsp.EXPORT_POVRAY,
-    "BEM": vsp.EXPORT_BEM,
-    "SELIG_AIRFOIL": vsp.EXPORT_SELIG_AIRFOIL,
-    "BEZIER_AIRFOIL": vsp.EXPORT_BEZIER_AIRFOIL,
+    "STL": (vsp.EXPORT_STL, ".stl"),
+    "STEP": (vsp.EXPORT_STEP, ".stp"),
+    "IGES": (vsp.EXPORT_IGES, ".igs"),
+    "OBJ": (vsp.EXPORT_OBJ, ".obj"),
+    "X3D": (vsp.EXPORT_X3D, ".x3d"),
+    "DXF": (vsp.EXPORT_DXF, ".dxf"),
+    "SVG": (vsp.EXPORT_SVG, ".svg"),
+    "GMSH": (vsp.EXPORT_GMSH, ".msh"),
+    "VSPGEOM": (vsp.EXPORT_VSPGEOM, ".vspgeom"),
+    "CART3D": (vsp.EXPORT_CART3D, ".tri"),
+    "NASCART": (vsp.EXPORT_NASCART, ".dat"),
+    "POVRAY": (vsp.EXPORT_POVRAY, ".pov"),
+    "BEM": (vsp.EXPORT_BEM, ".bem"),
+    "SELIG_AIRFOIL": (vsp.EXPORT_SELIG_AIRFOIL, ".dat"),
+    "BEZIER_AIRFOIL": (vsp.EXPORT_BEZIER_AIRFOIL, ".bz"),
 }
 
 
 @server.tool()
-def vsp_export(path: str, export_format: str, set_index: int = 0, keep_mesh: bool = False) -> dict:
+def vsp_export(
+    path: str,
+    export_format: str,
+    set_index: int = 0,
+    geom_id: str = "",
+    keep_mesh: bool = False,
+) -> dict:
     """Export the model to a CAD or mesh file.
+
+    A default extension is appended when the path has none. This matters:
+    OpenVSP's IGES writer aborts the process on an extensionless path.
 
     Args:
         path: absolute destination path.
         export_format: one of STL, STEP, IGES, OBJ, X3D, DXF, SVG, GMSH,
             VSPGEOM, CART3D, NASCART, POVRAY, BEM, SELIG_AIRFOIL, BEZIER_AIRFOIL.
         set_index: geometry set; 0 = SET_ALL.
+        geom_id: propeller to export; required by BEM, ignored otherwise.
         keep_mesh: keep the MeshGeom that mesh-based formats generate. Off by
             default — left in the model these accumulate into later exports.
     """
     fmt = export_format.upper()
     if fmt not in _EXPORT_FORMATS:
         raise ValueError(f"unknown format {export_format}; expected one of {sorted(_EXPORT_FORMATS)}")
+    code, default_ext = _EXPORT_FORMATS[fmt]
+
+    written = path if os.path.splitext(path)[1] else path + default_ext
+
     with _vsp_call(), _mesh_cleanup(keep_mesh):
+        if fmt == "BEM":
+            prop = geom_id or next(
+                (g for g in vsp.FindGeoms() if vsp.GetGeomTypeName(g) == "Propeller"), ""
+            )
+            if not prop:
+                raise ValueError("BEM export needs a propeller; pass geom_id")
+            vsp.SetBEMPropID(prop)
         vsp.Update()
-        vsp.ExportFile(path, set_index, _EXPORT_FORMATS[fmt])
-        return {"ok": True, "path": path, "format": fmt}
+        vsp.ExportFile(written, set_index, code)
+        return {"ok": True, "path": written, "format": fmt}
 
 
 # --------------------------------------------------------------------------
