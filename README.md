@@ -110,10 +110,9 @@ quadratic, and CL_alpha ≈ 0.068/deg against a DATCOM estimate of 0.065/deg,
 rising with aspect ratio as expected.
 
 Reproducing the planform from the report's dimensions gives aspect ratio 8.000
-and MAC 16.670 against the published 8.02 and 16.672. Note that OpenVSP's
-shipped `TR1208.vspscript` does *not* reproduce it — see
-[OpenVSP/OpenVSP](https://github.com/OpenVSP/OpenVSP) issue for the three
-defects in that example.
+and MAC 16.670 against the published 8.02 and 16.672. OpenVSP's own shipped
+`TR1208.vspscript` does *not* reproduce it — the four defects found along the
+way are fixed in [OpenVSP/OpenVSP#384](https://github.com/OpenVSP/OpenVSP/pull/384).
 
 ## License
 
