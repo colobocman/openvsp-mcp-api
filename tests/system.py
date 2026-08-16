@@ -417,6 +417,19 @@ def main():
         info["version"].startswith("OpenVSP") and bool(info["vspaero_path"]),
     )
     mp = c.tool("vsp_mass_properties")["results"]
+    # The per-slice Fill_* arrays are ~30 KB at the default 100 slices and
+    # flooded the caller's context when this ran over a live MCP connection.
+    ok(
+        "mass properties compact by default",
+        not any(k.startswith("Fill_") for k in mp),
+        f"{len(mp)} keys",
+    )
+    full = c.tool("vsp_mass_properties", {"include_slices": True})["results"]
+    ok(
+        "per-slice detail available on request",
+        any(k.startswith("Fill_") for k in full),
+        f"{len(full)} keys",
+    )
     cg = c.tool("vsp_comp_geom")["results"]
     ok(
         "mass and wetted area positive",

@@ -419,8 +419,13 @@ def vsp_get_parms(geom_id: str, parms: list[dict]) -> list[ParmDetail]:
 def vsp_set_parms(geom_id: str, parms: list[dict]) -> list[ParmDetail]:
     """Set parameters and update the model.
 
-    OpenVSP clamps values to each parameter's limits, so the returned values are
-    what was actually applied — check them rather than assuming.
+    The returned values are what was actually applied — check them rather than
+    assuming. A write can land differently than requested for two reasons:
+    OpenVSP clamps values to each parameter's limits, and many parameters are
+    linked through driver groups (a wing's span, chord, area and aspect ratio
+    are one such group — only the current drivers hold a value, the rest are
+    recomputed). To choose which quantities drive a wing section, call
+    SetDriverGroup via vsp_run_api_script.
 
     Args:
         geom_id: component id.
@@ -650,14 +655,24 @@ def vsp_run_analysis(
 
 
 @server.tool()
-def vsp_mass_properties(set_index: int = 0, num_slices: int = 100) -> AnalysisResult:
+def vsp_mass_properties(
+    set_index: int = 0, num_slices: int = 100, include_slices: bool = False
+) -> AnalysisResult:
     """Compute mass, centre of gravity, and inertia tensor of the model.
+
+    Returns totals and per-component values. The slice-by-slice integration
+    detail (`Fill_*`, one entry per slice per quantity) is dropped unless asked
+    for — with the default 100 slices it is ~30 KB that rarely matters.
 
     Args:
         set_index: geometry set; 0 = SET_ALL.
         num_slices: slice count for the numerical integration.
+        include_slices: keep the per-slice `Fill_*` arrays in the result.
     """
-    return vsp_run_analysis("MassProp", {"Set": set_index, "NumMassSlices": num_slices})
+    out = vsp_run_analysis("MassProp", {"Set": set_index, "NumMassSlices": num_slices})
+    if not include_slices:
+        out["results"] = {k: v for k, v in out["results"].items() if not k.startswith("Fill_")}
+    return out
 
 
 @server.tool()
